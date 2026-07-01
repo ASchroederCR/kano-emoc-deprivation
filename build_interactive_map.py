@@ -10,6 +10,8 @@ verified EmOC masterlist) and renders them as togglable Leaflet layers:
   - Community-validation "focus" cells (transition zones between deprivation
     levels, per IDEAMAPS dataset-metadata.json) - loaded in the .qmd but
     never surfaced there
+  - WorldPop women 15-49 population density, 2020 (the model's demand layer)
+    - pre-built by fetch_worldpop_layer.py, see that script for why
   - GRID3 confirmed hospital-level facilities (General / Specialized /
     Teaching-Tertiary), with the whitespace bug in facility_level_option
     fixed so Aminu Kano Teaching Hospital is no longer silently dropped
@@ -25,6 +27,7 @@ tile/JS references, same as folium's default).
 
 import io
 import json
+from pathlib import Path
 
 import folium
 import numpy as np
@@ -161,6 +164,30 @@ folium.raster_layers.ImageOverlay(
     show=False,
 ).add_to(m)
 
+# --- WorldPop women 15-49 population density (demand layer) ---
+# Pre-built by fetch_worldpop_layer.py (see that script's docstring for why
+# this isn't fetched live here: WorldPop's server doesn't honour HTTP range
+# requests, so building it requires a ~420 MB one-off download).
+worldpop_png = Path("worldpop_women_15_49_2020.png")
+worldpop_json = Path("worldpop_women_15_49_2020.json")
+if worldpop_png.exists() and worldpop_json.exists():
+    with open(worldpop_json) as f:
+        worldpop_meta = json.load(f)
+    folium.raster_layers.ImageOverlay(
+        image=str(worldpop_png),
+        bounds=worldpop_meta["bounds"],
+        name="WorldPop women 15-49, 2020 (demand population)",
+        opacity=0.75,
+        interactive=False,
+        cross_origin=False,
+        show=False,
+    ).add_to(m)
+else:
+    print(
+        "worldpop_women_15_49_2020.png/.json not found -- skipping population layer. "
+        "Run fetch_worldpop_layer.py first to generate it."
+    )
+
 # --- GRID3 confirmed hospital-level facilities ---
 hosp_fg = folium.FeatureGroup(name="GRID3 confirmed hospitals (General/Specialized/Teaching)", show=True)
 for _, r in confirmed.iterrows():
@@ -277,7 +304,11 @@ legend_html = """
   <span style="color:#e74c3c;">&#9632;</span> High<br>
   <b>Facility ownership</b><br>
   <span style="color:#3498db;">&#9679;</span> Public&nbsp;&nbsp;
-  <span style="color:#e67e22;">&#9679;</span> Private
+  <span style="color:#e67e22;">&#9679;</span> Private<br>
+  <b>Women 15-49 (WorldPop)</b><br>
+  <span style="color:#dadaeb;">&#9632;</span> Low&nbsp;&nbsp;
+  <span style="color:#807dba;">&#9632;</span> Med&nbsp;&nbsp;
+  <span style="color:#3f007d;">&#9632;</span> High
 </div>
 """
 m.get_root().html.add_child(folium.Element(legend_html))
