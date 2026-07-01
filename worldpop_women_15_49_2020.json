@@ -10,5 +10,22 @@
     ]
   ],
   "max_women_15_49_per_cell": 203.6322479248047,
-  "total_women_15_49_in_bbox": 1312839.875
+  "total_women_15_49_in_bbox": 1312839.875,
+  "class_edges": [
+    1.1396678686141968,
+    5.834056536356608,
+    13.094952901204426,
+    203.6322479248047
+  ],
+  "class_labels": [
+    "Low (1.1\u20135.8)",
+    "Medium (5.8\u201313.1)",
+    "High (13.1\u2013203.6)"
+  ],
+  "class_colors": [
+    "#dadaeb",
+    "#807dba",
+    "#3f007d"
+  ],
+  "class_units": "women aged 15\u201349 per ~100 m grid cell"
 }

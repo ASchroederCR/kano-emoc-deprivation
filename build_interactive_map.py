@@ -170,6 +170,7 @@ folium.raster_layers.ImageOverlay(
 # requests, so building it requires a ~420 MB one-off download).
 worldpop_png = Path("worldpop_women_15_49_2020.png")
 worldpop_json = Path("worldpop_women_15_49_2020.json")
+worldpop_meta = None
 if worldpop_png.exists() and worldpop_json.exists():
     with open(worldpop_json) as f:
         worldpop_meta = json.load(f)
@@ -294,7 +295,19 @@ folium.Rectangle(
 extents_fg.add_to(m)
 
 # --- legend ---
-legend_html = """
+worldpop_legend_rows = ""
+if worldpop_meta is not None:
+    swatches = "<br>".join(
+        f'<span style="color:{color};">&#9632;</span> {label}'
+        for color, label in zip(worldpop_meta["class_colors"], worldpop_meta["class_labels"])
+    )
+    worldpop_legend_rows = (
+        f'<b>Women 15-49 (WorldPop, quintiles)</b><br>'
+        f'<span style="font-size:11px; color:#555;">{worldpop_meta["class_units"]}</span><br>'
+        f"{swatches}<br>"
+    )
+
+legend_html = f"""
 <div style="position: fixed; bottom: 30px; left: 30px; z-index: 9999;
             background: white; padding: 10px 14px; border: 1px solid #999;
             border-radius: 4px; font-size: 13px; line-height: 1.6;">
@@ -305,10 +318,7 @@ legend_html = """
   <b>Facility ownership</b><br>
   <span style="color:#3498db;">&#9679;</span> Public&nbsp;&nbsp;
   <span style="color:#e67e22;">&#9679;</span> Private<br>
-  <b>Women 15-49 (WorldPop)</b><br>
-  <span style="color:#dadaeb;">&#9632;</span> Low&nbsp;&nbsp;
-  <span style="color:#807dba;">&#9632;</span> Med&nbsp;&nbsp;
-  <span style="color:#3f007d;">&#9632;</span> High
+  {worldpop_legend_rows}
 </div>
 """
 m.get_root().html.add_child(folium.Element(legend_html))
