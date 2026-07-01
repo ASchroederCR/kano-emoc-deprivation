@@ -302,7 +302,7 @@ if worldpop_meta is not None:
         for color, label in zip(worldpop_meta["class_colors"], worldpop_meta["class_labels"])
     )
     worldpop_legend_rows = (
-        f'<b>Women 15-49 (WorldPop, quintiles)</b><br>'
+        f'<b>Women 15-49 (WorldPop, tertiles)</b><br>'
         f'<span style="font-size:11px; color:#555;">{worldpop_meta["class_units"]}</span><br>'
         f"{swatches}<br>"
     )
