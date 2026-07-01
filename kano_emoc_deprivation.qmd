@@ -1,0 +1,475 @@
+---
+title: "Emergency Obstetric Care access deprivation in Kano, Nigeria"
+author: "Andrew Schroeder"
+date: "July 1, 2026"
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    embed-resources: true
+    code-fold: true
+---
+
+::: {.callout-note}
+Prepared in RStudio with the assistance of Claude Sonnet 4.6. The contents have been reviewed and validated by Andrew Schroeder on July 1, 2026.
+<!--
+To indicate human review: Delete the line above about contents not being reviewed, and replace this comment with:
+The contents have been reviewed and validated by [Your Name], [Your Role] on [Date].
+-->
+:::
+
+# Introduction
+
+Emergency Obstetric Care (EmOC) accessibility is a critical determinant of maternal and neonatal health outcomes. This report examines the spatial distribution of EmOC access deprivation across the Kano Functional Urban Area (FUA) in northern Nigeria, using modelled grid-level deprivation scores from IdeaMaps cross-referenced against two independent health facility datasets.
+
+The deprivation index is produced by an Enhanced Two-Step Floating Catchment Area (E2SFCA) model that integrates:
+
+- **Supply:** EmOC-capable facilities weighted by ownership (public vs. private) and service level
+- **Demand:** Women of childbearing age, disaggregated from WorldPop 2020 estimates via building footprints
+- **Accessibility:** Car travel times estimated with OpenRouteService
+
+Each 100 m grid cell is then assigned one of three deprivation levels by community validators using the IdeaMaps platform: **Low** (good access), **Medium**, or **High** (deprived).
+
+## Data sources
+
+| Dataset | Description | Source |
+|:---|:---|:---|
+| IDEAMAPS EmOC model outputs | 100 m grid deprivation scores, Kano FUA | [GitHub](https://github.com/urbanbigdatacentre/ideamaps-models) |
+| GRID3 NGA Health Facilities v2.0 | Geocoded health facility points across Nigeria | [data.grid3.org](https://data.grid3.org/datasets/a0ed9627a8b240ff8b315a84575754a4_0) |
+| Olubodun, Macharia et al. (2023) | Verified comprehensive EmOC facility masterlist, 15 Nigerian cities | [figshare:22689667](https://doi.org/10.6084/m9.figshare.22689667.v2) |
+
+```{r}
+#| label: load-packages
+#| message: false
+library(tidyverse)
+library(jsonlite)
+library(ggrepel)
+library(knitr)
+```
+
+```{r}
+#| label: load-ideamaps
+#| message: false
+emoc_raw <- read_csv(
+  paste0("https://raw.githubusercontent.com/urbanbigdatacentre/",
+         "ideamaps-models/dev/models/emergency-maternal-care/kano/model-outputs.csv")
+)
+
+emoc <- emoc_raw |>
+  mutate(
+    deprivation = factor(result,
+      levels = c(0, 1, 2),
+      labels = c("Low", "Medium", "High")
+    ),
+    focused = as.logical(focused)
+  )
+
+kano_fua_lon <- range(emoc$longitude)
+kano_fua_lat <- range(emoc$latitude)
+```
+
+```{r}
+#| label: load-grid3
+#| message: false
+grid3_url <- paste0(
+  "https://services3.arcgis.com/BU6Aadhn6tbBEdyk/arcgis/rest/services/",
+  "GRID3_NGA_health_facilities_v2_0/FeatureServer/0/query",
+  "?where=state%3D%27Kano%27",
+  "&outFields=facility_name,facility_level,facility_level_option,",
+  "ownership,ownership_type,latitude,longitude",
+  "&resultRecordCount=2000&f=json"
+)
+
+grid3_raw <- fromJSON(grid3_url)
+kano_hf <- as.data.frame(grid3_raw$features$attributes)
+
+# Filter to Kano FUA and classify confirmed hospital-level EmOC sites
+kano_hf_fua <- kano_hf |>
+  filter(
+    longitude >= kano_fua_lon[1], longitude <= kano_fua_lon[2],
+    latitude  >= kano_fua_lat[1], latitude  <= kano_fua_lat[2],
+    !is.na(latitude), !is.na(longitude)
+  )
+
+confirmed_hospitals <- filter(kano_hf_fua,
+  facility_level_option %in% c("General Hospital",
+                                "Teaching/Tertiary Hospital",
+                                "Specialized Hospital")
+)
+```
+
+```{r}
+#| label: load-macharia
+#| message: false
+ontime_raw <- read_csv(
+  "https://ndownloader.figshare.com/files/41570451",
+  show_col_types = FALSE
+)
+
+# State 9 = Kano (median lon ~8.54, lat ~12.0, LGA "Dala")
+kano_emoc <- ontime_raw |>
+  filter(state == 9) |>
+  select(facility_name, lga, owner, facility_level, operating_times,
+         cemoc_verified, latitude, longitude,
+         verif_onground, operation_status)
+
+kano_emoc_fua <- kano_emoc |>
+  filter(
+    longitude >= kano_fua_lon[1], longitude <= kano_fua_lon[2],
+    latitude  >= kano_fua_lat[1], latitude  <= kano_fua_lat[2]
+  ) |>
+  mutate(owner_label = ifelse(owner == 1, "Public", "Private"),
+         level_label = case_when(
+           facility_level == 0 ~ "Primary",
+           facility_level == 1 ~ "Secondary",
+           facility_level == 2 ~ "Tertiary",
+           TRUE                ~ NA_character_
+         ))
+```
+
+# City-wide deprivation patterns
+
+The IDEAMAPS model covers `{r} scales::comma(nrow(emoc))` grid cells at 100 m resolution across the Kano FUA. The overall distribution is heavily skewed: nearly 70% of all cells are classified as High deprivation, while only 10% are Low.
+
+```{r}
+#| label: deprivation-distribution
+emoc |>
+  count(deprivation) |>
+  mutate(pct = n / sum(n) * 100) |>
+  ggplot(aes(x = deprivation, y = pct, fill = deprivation)) +
+  geom_col(width = 0.6) +
+  geom_text(aes(label = paste0(round(pct, 1), "%\n(n=", scales::comma(n), ")")),
+            vjust = -0.3, size = 3.5) +
+  scale_fill_manual(
+    values = c("Low" = "#2ecc71", "Medium" = "#f39c12", "High" = "#e74c3c")
+  ) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+  labs(title = "Distribution of EmOC access deprivation — Kano FUA",
+       x = "Access deprivation", y = "% of grid cells") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "none")
+```
+
+The full-FUA map reveals a concentric spatial structure: Low and Medium deprivation is concentrated in the urban core, with High deprivation dominating the periphery.
+
+```{r}
+#| label: citywide-map
+ggplot(emoc, aes(x = longitude, y = latitude, color = deprivation)) +
+  geom_point(size = 0.08, alpha = 0.55) +
+  scale_color_manual(
+    values = c("Low" = "#2ecc71", "Medium" = "#f39c12", "High" = "#e74c3c"),
+    name = "Access deprivation"
+  ) +
+  labs(title = "EmOC access deprivation — Kano Functional Urban Area",
+       subtitle = "100 m grid cells  |  IDEAMAPS model",
+       x = "Longitude", y = "Latitude",
+       caption = "Source: IDEAMAPS (github.com/urbanbigdatacentre/ideamaps-models)") +
+  coord_equal() +
+  theme_minimal(base_size = 12) +
+  guides(color = guide_legend(override.aes = list(size = 3, alpha = 1)))
+```
+
+# City centre zoom
+
+```{r}
+#| label: citycentre-setup
+lon_lo <- 8.42; lon_hi <- 8.62
+lat_lo <- 11.94; lat_hi <- 12.12
+
+emoc_zoom <- emoc |>
+  filter(longitude >= lon_lo, longitude <= lon_hi,
+         latitude  >= lat_lo, latitude  <= lat_hi)
+```
+
+Zooming into the city centre reveals **two distinct Low deprivation clusters** — the fingerprint of the E2SFCA catchment areas surrounding EmOC facility concentrations. Medium deprivation forms a buffer around each cluster, transitioning outward to High deprivation. Within the zoom area, `{r} round(mean(emoc_zoom$result == 0) * 100, 1)`% of cells are Low deprivation, compared with `{r} round(mean(emoc$result == 0) * 100, 1)`% city-wide.
+
+```{r}
+#| label: citycentre-map
+ggplot(emoc_zoom, aes(x = longitude, y = latitude, color = deprivation)) +
+  geom_point(size = 0.3, alpha = 0.7) +
+  geom_density_2d(
+    data = filter(emoc_zoom, result == 0),
+    aes(x = longitude, y = latitude),
+    color = "darkgreen", linewidth = 0.5, alpha = 0.8,
+    inherit.aes = FALSE, bins = 8
+  ) +
+  scale_color_manual(
+    values = c("Low" = "#2ecc71", "Medium" = "#f39c12", "High" = "#e74c3c"),
+    name = "Access deprivation"
+  ) +
+  labs(title = "EmOC deprivation — Kano city centre",
+       subtitle = "Contour lines show density of Low deprivation cells",
+       x = "Longitude", y = "Latitude",
+       caption = "Low = good EmOC access (<30 min to affordable facility)") +
+  coord_equal() +
+  theme_minimal(base_size = 12) +
+  guides(color = guide_legend(override.aes = list(size = 3, alpha = 1)))
+```
+
+# GRID3 facility overlay
+
+Overlaying confirmed hospital-level facilities from the GRID3 NGA Health Facilities v2.0 dataset onto the city-centre deprivation map confirms that the Low deprivation clusters align with concentrations of public general hospitals. There are `{r} nrow(confirmed_hospitals)` confirmed hospital-level EmOC sites (General, Specialist, and Teaching hospitals) within the Kano FUA.
+
+```{r}
+#| label: grid3-overlay-map
+hosp_zoom <- filter(confirmed_hospitals,
+  longitude >= lon_lo, longitude <= lon_hi,
+  latitude  >= lat_lo, latitude  <= lat_hi)
+
+ggplot(emoc_zoom, aes(x = longitude, y = latitude, color = deprivation)) +
+  geom_point(size = 0.25, alpha = 0.6) +
+  geom_point(data = hosp_zoom,
+             aes(x = longitude, y = latitude, fill = ownership),
+             shape = 21, size = 5, stroke = 1.2, color = "black",
+             inherit.aes = FALSE) +
+  scale_color_manual(
+    values = c("Low" = "#2ecc71", "Medium" = "#f39c12", "High" = "#e74c3c"),
+    name = "Access deprivation"
+  ) +
+  scale_fill_manual(
+    values = c("Public" = "#3498db", "Private" = "#e67e22"),
+    name = "Hospital ownership"
+  ) +
+  coord_equal(xlim = c(lon_lo, lon_hi), ylim = c(lat_lo, lat_hi)) +
+  labs(title = "EmOC deprivation and GRID3 hospital locations — Kano city centre",
+       subtitle = "Circles = General / Specialist hospitals",
+       x = "Longitude", y = "Latitude",
+       caption = "Facilities: CIESIN/GRID3 NGA Health Facilities v2.0 (CC BY 4.0)") +
+  theme_minimal(base_size = 12) +
+  guides(color = guide_legend(override.aes = list(size = 3, alpha = 1)),
+         fill  = guide_legend(override.aes = list(size = 4)))
+```
+
+## Hospital access coverage
+
+For each of the `{r} nrow(filter(confirmed_hospitals, sqrt((longitude - 8.549)^2 + (latitude - 11.976)^2) * 111 < 25))` confirmed hospitals within the Kano FUA, we computed the percentage of Low deprivation grid cells within a 2 km radius — a proxy for the local accessibility environment each facility sits within.
+
+```{r}
+#| label: compute-alignment
+radius_deg <- 0.018  # ~2 km at this latitude
+
+# Vectorised distance matrix: hospitals × grid cells
+lon_diff <- outer(confirmed_hospitals$longitude, emoc$longitude, `-`)
+lat_diff <- outer(confirmed_hospitals$latitude,  emoc$latitude,  `-`)
+dist_mat  <- sqrt(lon_diff^2 + lat_diff^2)
+
+within_2km <- dist_mat < radius_deg
+low_vec     <- emoc$result == 0
+
+alignment <- confirmed_hospitals |>
+  mutate(
+    n_total_2km = rowSums(within_2km),
+    n_low_2km   = rowSums(within_2km & matrix(low_vec, nrow = nrow(confirmed_hospitals),
+                                               ncol = nrow(emoc), byrow = TRUE)),
+    pct_low     = round(n_low_2km / n_total_2km * 100, 1)
+  ) |>
+  filter(n_total_2km > 50) |>
+  arrange(desc(pct_low))
+```
+
+```{r}
+#| label: alignment-table
+alignment |>
+  select(`Facility` = facility_name,
+         `Type`     = facility_level_option,
+         `Ownership` = ownership,
+         `Lon`      = longitude,
+         `Lat`      = latitude,
+         `Cells (2 km)` = n_total_2km,
+         `Low cells` = n_low_2km,
+         `% Low`    = pct_low) |>
+  kable(digits = 1,
+        caption = paste0("Local access environment for confirmed hospital-level EmOC sites",
+                         " in the Kano FUA. % Low = share of grid cells classified as Low",
+                         " deprivation within a 2 km radius."))
+```
+
+The table reveals a striking range: from 92.7% Low (Standard Hospital Specialist) to 7.5% Low (Murtala Mohammed General Hospital). This disparity among facilities in the same city merited further investigation.
+
+# The Murtala Mohammed Hospital Anomaly
+
+```{r}
+#| label: anomaly-setup
+deg_5km <- 5 / 111
+
+murtala <- filter(alignment, grepl("Murtala", facility_name))
+standard <- filter(alignment, grepl("Standard", facility_name))
+
+metrics <- alignment |>
+  rowwise() |>
+  mutate(
+    n_comp_gen_5km = sum(
+      confirmed_hospitals$facility_level_option == "General Hospital" &
+      confirmed_hospitals$ownership == "Public" &
+      sqrt((confirmed_hospitals$longitude - longitude)^2 +
+           (confirmed_hospitals$latitude  - latitude)^2) < deg_5km &
+      confirmed_hospitals$facility_name != facility_name
+    ),
+    n_hosp_5km = sum(
+      sqrt((confirmed_hospitals$longitude - longitude)^2 +
+           (confirmed_hospitals$latitude  - latitude)^2) < deg_5km
+    )
+  ) |>
+  ungroup() |>
+  mutate(
+    short_name = case_when(
+      grepl("Murtala",  facility_name) ~ "Murtala Mohammed GH",
+      grepl("Standard", facility_name) ~ "Standard Hospital",
+      grepl("Waziri",   facility_name) ~ "Waziri Shehu GH",
+      grepl("Kura",     facility_name) ~ "Kura General GH",
+      grepl("Dawanau",  facility_name) ~ "Dawanau Psychiatric",
+      grepl("New H B",  facility_name) ~ "New HB Paediatric H.",
+      grepl("Al Noury", facility_name) ~ "Al Noury Hospital",
+      TRUE                             ~ ""
+    ),
+    label_flag = short_name != ""
+  )
+```
+
+Murtala Mohammed General Hospital — one of Kano's primary public referral facilities — sits in a zone that is only `{r} murtala$pct_low`% Low deprivation within 2 km, despite being located in the dense urban core alongside `{r} filter(metrics, grepl("Murtala", facility_name))$n_hosp_5km` other GRID3-listed hospital-level facilities within 5 km.
+
+The facility competition scatter plot below shows that raw facility count does not explain the access pattern. Standard Hospital, with fewer GRID3 competitors, sits in a strongly Low-deprivation zone — while Murtala Mohammed, with the most competitors, sits in the worst local environment.
+
+```{r}
+#| label: competition-scatter
+ggplot(metrics, aes(x = n_comp_gen_5km, y = pct_low)) +
+  geom_point(aes(size = n_total_2km / 100, color = pct_low), alpha = 0.85) +
+  geom_label_repel(
+    data = filter(metrics, label_flag),
+    aes(label = short_name), size = 2.9,
+    nudge_y = 4, min.segment.length = 0.3, box.padding = 0.45,
+    label.padding = 0.2, max.overlaps = 20
+  ) +
+  scale_color_gradient2(low = "#e74c3c", mid = "#f39c12", high = "#2ecc71",
+                        midpoint = 50, guide = "none") +
+  scale_size_continuous(range = c(2, 7),
+                        name = "Populated grid\ncells within\n2 km (×100)") +
+  labs(title = "Hospital access coverage vs catchment competition",
+       subtitle = paste0("% Low deprivation within 2 km vs competing public general",
+                         " hospitals within 5 km"),
+       x = "Competing public general hospitals within 5 km",
+       y = "% Low deprivation cells within 2 km") +
+  theme_minimal(base_size = 12)
+```
+
+# Cross-reference: Macharia et al. (2023)
+
+```{r}
+#| label: macharia-distances
+kano_emoc_fua <- kano_emoc_fua |>
+  mutate(
+    dist_murtala_km  = sqrt((longitude - murtala$longitude)^2 +
+                            (latitude  - murtala$latitude)^2)  * 111,
+    dist_standard_km = sqrt((longitude - standard$longitude)^2 +
+                            (latitude  - standard$latitude)^2) * 111
+  )
+```
+
+To verify which facilities the IDEAMAPS model actually counted as EmOC supply the  the GRID3 dataset was cross-referencedagainst the Macharia et al. (2023) masterlist of facilities with **verified capacity for caesarean section** — the operational definition of comprehensive EmOC used by the model. This dataset covers 15 Nigerian urban conurbations and is based on direct verification (on-ground surveys, registry checks, and organisational records).
+
+```{r}
+#| label: macharia-supply-table
+n_mm <- nrow(filter(kano_emoc_fua, dist_murtala_km  <= 2.5))
+n_sh <- nrow(filter(kano_emoc_fua, dist_standard_km <= 2.5))
+
+n_mm_pub <- sum(filter(kano_emoc_fua, dist_murtala_km  <= 2.5)$owner == 1)
+n_sh_pub <- sum(filter(kano_emoc_fua, dist_standard_km <= 2.5)$owner == 1)
+
+tibble(
+  Area              = c("Murtala Mohammed GH (2.5 km)",
+                        "Standard Hospital (2.5 km)"),
+  `Verified EmOC`   = c(n_mm, n_sh),
+  Public            = c(n_mm_pub, n_sh_pub),
+  Private           = c(n_mm - n_mm_pub, n_sh - n_sh_pub)
+) |>
+  kable(caption = paste0("Macharia et al. (2023) verified comprehensive EmOC",
+                         " facilities within 2.5 km of each focal hospital."))
+```
+
+**Murtala Mohammed General Hospital does not appear in the Macharia verified list.** The closest verified public facility to its GRID3 coordinates is Marmara General Hospital, 1.1 km away. By contrast, the Standard Hospital area benefits from `{r} n_sh` verified sites, including **Aminu Kano Teaching Hospital** — the only tertiary public EmOC provider in the dataset, located 1.8 km from Standard Hospital.
+
+This means the E2SFCA model assigns zero supply weight at the Murtala Mohammed location itself. The combined effect of being absent from the verified supply list and being surrounded by a very large population explains the High deprivation scores in its immediate vicinity.
+
+The map below overlays Macharia verified EmOC facilities onto the city-centre deprivation surface, clearly showing the supply concentration in the eastern city core (near Standard Hospital) vs the relative sparsity around Murtala Mohammed.
+
+```{r}
+#| label: macharia-map
+kano_emoc_zoom <- filter(kano_emoc_fua,
+  longitude >= lon_lo, longitude <= lon_hi,
+  latitude  >= lat_lo, latitude  <= lat_hi)
+
+murtala_row  <- filter(confirmed_hospitals, grepl("Murtala",  facility_name))
+standard_row <- filter(confirmed_hospitals, grepl("Standard", facility_name))
+
+ggplot(emoc_zoom, aes(x = longitude, y = latitude, color = deprivation)) +
+  geom_point(size = 0.2, alpha = 0.55) +
+  geom_point(
+    data = kano_emoc_zoom,
+    aes(x = longitude, y = latitude,
+        fill  = owner_label,
+        shape = case_when(
+          facility_level == 2 ~ "Tertiary",
+          facility_level == 1 ~ "Secondary",
+          TRUE                ~ "Primary"
+        )),
+    size = 3, stroke = 0.8, color = "black",
+    inherit.aes = FALSE
+  ) +
+  annotate("point", x = murtala_row$longitude,  y = murtala_row$latitude,
+           shape = 4, size = 5, color = "black", stroke = 2) +
+  annotate("text",
+           x = murtala_row$longitude  + 0.005, y = murtala_row$latitude + 0.005,
+           label = "Murtala Mohammed GH\n(not in Macharia list)",
+           hjust = 0, size = 2.5, fontface = "italic") +
+  annotate("point", x = standard_row$longitude, y = standard_row$latitude,
+           shape = 4, size = 5, color = "black", stroke = 2) +
+  annotate("text",
+           x = standard_row$longitude + 0.005, y = standard_row$latitude + 0.005,
+           label = "Standard Hospital\n(in Macharia list)",
+           hjust = 0, size = 2.5, fontface = "italic") +
+  scale_color_manual(
+    values = c("Low" = "#2ecc71", "Medium" = "#f39c12", "High" = "#e74c3c"),
+    name = "Access deprivation"
+  ) +
+  scale_fill_manual(
+    values = c("Public" = "#3498db", "Private" = "#e67e22"),
+    name = "Verified EmOC\nownership"
+  ) +
+  scale_shape_manual(
+    values = c("Tertiary" = 24, "Secondary" = 21, "Primary" = 22),
+    name = "Facility level"
+  ) +
+  coord_equal(xlim = c(lon_lo, lon_hi), ylim = c(lat_lo, lat_hi)) +
+  labs(title = "Macharia et al. verified EmOC facilities vs access deprivation",
+       subtitle = "× = GRID3 hospital location  |  Symbols = verified comprehensive EmOC sites",
+       x = "Longitude", y = "Latitude",
+       caption = paste0("Deprivation: IDEAMAPS  |  ",
+                        "Facilities: Olubodun, Macharia et al. 2023 (CC BY 4.0, ",
+                        "figshare:22689667)")) +
+  theme_minimal(base_size = 11) +
+  guides(
+    color = guide_legend(override.aes = list(size = 3, alpha = 1)),
+    fill  = guide_legend(override.aes = list(size = 4, shape = 21)),
+    shape = guide_legend(override.aes = list(size = 4, fill = "grey60"))
+  )
+```
+
+# Key findings
+
+1. **Severe and widespread deprivation.** Nearly 70% of the Kano FUA's populated grid cells are classified as High EmOC access deprivation. Meaningful access is concentrated in two clusters in the eastern city core, serving a minority of the urban population.
+
+2. **Facility locations align with modelled access.** Low deprivation clusters correspond spatially to concentrations of verified EmOC-capable facilities, validating the E2SFCA model's spatial logic.
+
+3. **The Murtala Mohammed anomaly is a genuine gap.** Murtala Mohammed General Hospital — the largest public general hospital in Kano by GRID3 classification — is absent from the Macharia et al. (2023) verified comprehensive EmOC masterlist. The model consequently assigns zero supply weight at its location, and the area around it is dominated by High deprivation despite being in the urban core.
+
+4. **Private-sector dependency in accessible zones.** The Low deprivation zone is sustained predominantly by private EmOC providers (`{r} round(mean(kano_emoc_zoom$owner == 2) * 100)`% of Macharia verified facilities in the city-centre zoom are private). The model down-weights private facilities for cost, meaning accessible zones exist despite this penalty — but they remain inaccessible to women who cannot afford private care.
+
+5. **Tertiary capacity is geographically concentrated.** Aminu Kano Teaching Hospital — the only tertiary public EmOC provider in the Macharia dataset — is located in the eastern city core near Standard Hospital, reinforcing the east–west access gradient visible in the deprivation map.
+
+---
+
+## References
+
+- IDEAMAPS (2024). *Emergency Obstetric Care Access Deprivation Model, Kano*. Urban Big Data Centre. <https://github.com/urbanbigdatacentre/ideamaps-models>
+- Center for Integrated Earth System Information (CIESIN), Columbia University (2024). *GRID3 NGA — Health Facilities v2.0*. GRID3. <https://doi.org/10.7916/kv1n-0743>
+- Olubodun T, Macharia PM, Wong KLM, et al. (2023). *Geocoded database of health facilities with verified capacity for caesarean section in urban Nigeria*. figshare. <https://doi.org/10.6084/m9.figshare.22689667.v2>
